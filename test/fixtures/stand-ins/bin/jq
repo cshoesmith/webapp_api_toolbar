@@ -1,0 +1,6 @@
+#!/bin/sh
+# Launches the jq stand-in. Generated scripts turn off Git Bash path rewriting,
+# so the path has to be converted for Windows node here.
+script=$(dirname "$0")/../jq.js
+if command -v cygpath > /dev/null; then script=$(cygpath -m "$script"); fi
+exec node "$script" "$@"

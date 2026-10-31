@@ -1,0 +1,2 @@
+# Bash scripts break on CRLF, so every checkout keeps LF, including on Windows.
+* text=auto eol=lf

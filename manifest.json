@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "API Toolbar",
+  "version": "0.1.0",
+  "description": "Record a web app's API traffic, copy any call as curl, and turn a session into a runnable bash, Python or PowerShell script.",
+  "minimum_chrome_version": "116",
+  "permissions": ["debugger", "sidePanel"],
+  "background": {
+    "service_worker": "src/background/service-worker.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "src/panel/panel.html"
+  },
+  "devtools_page": "src/devtools/devtools.html",
+  "action": {
+    "default_title": "Record this tab's API calls",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}

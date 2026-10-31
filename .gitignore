@@ -1,0 +1,9 @@
+node_modules/
+__pycache__/
+
+# Recordings and generated scripts hold live credentials and session data.
+*.env
+.env*
+*.har
+*_output/
+/api_script*

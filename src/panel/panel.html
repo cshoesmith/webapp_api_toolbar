@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>API Toolbar</title>
+    <link rel="stylesheet" href="panel.css" />
+    <script type="module" src="panel.js"></script>
+  </head>
+  <body>
+    <section id="recorder" class="view">
+      <header class="toolbar">
+        <button id="record" class="record" aria-pressed="false" title="Start or stop recording">
+          <span class="dot" aria-hidden="true"></span><span id="record-label">Record</span>
+        </button>
+        <span id="target" class="target muted"></span>
+        <button id="clear" title="Remove every recorded request">Clear</button>
+        <span class="divider" aria-hidden="true"></span>
+        <input id="search" type="search" placeholder="Filter by URL" aria-label="Filter by URL" />
+        <div class="segmented" role="group" aria-label="Which requests to show">
+          <button id="scope-api" aria-pressed="true" title="Only API calls, without page assets and trackers">API</button>
+          <button id="scope-all" aria-pressed="false" title="Everything the page requested">All</button>
+        </div>
+        <select id="host" aria-label="Filter by host"></select>
+        <span id="count" class="muted"></span>
+        <span class="spacer"></span>
+        <button id="import" title="Load a HAR file">Import</button>
+        <button id="export" title="Save these requests as a HAR file, including any credentials">Export</button>
+        <button id="copy-all" title="Copy every ticked request as curl">Copy all as curl</button>
+        <button id="make-script" class="primary">Make me a bash script</button>
+        <input id="import-file" type="file" accept=".har,application/json" hidden />
+      </header>
+
+      <div class="split">
+        <div class="list" id="list" tabindex="0" aria-label="Recorded requests">
+          <table>
+            <thead>
+              <tr>
+                <th class="col-tick"><input id="tick-all" type="checkbox" aria-label="Tick all requests" checked /></th>
+                <th class="col-method">Method</th>
+                <th class="col-status">Status</th>
+                <th>Request</th>
+                <th class="col-flow" title="Values taken from earlier responses">Inputs</th>
+                <th class="col-num">Size</th>
+                <th class="col-num">Time</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+          <div id="empty" class="empty"></div>
+        </div>
+
+        <aside class="detail" id="detail" hidden>
+          <div class="tabs" role="tablist">
+            <button role="tab" data-tab="curl" aria-selected="true">curl</button>
+            <button role="tab" data-tab="request" aria-selected="false">Request</button>
+            <button role="tab" data-tab="response" aria-selected="false">Response</button>
+            <button role="tab" data-tab="flow" aria-selected="false">Flow</button>
+            <span class="spacer"></span>
+            <button id="close-detail" class="ghost" aria-label="Close details">Close</button>
+          </div>
+          <div id="detail-body" class="detail-body"></div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="scripter" class="view" hidden>
+      <header class="toolbar">
+        <button id="back">Back to requests</button>
+        <span class="divider" aria-hidden="true"></span>
+        <label class="field">Language
+          <select id="language"></select>
+        </label>
+        <label class="field">File name
+          <input id="script-name" type="text" value="api_script" spellcheck="false" />
+        </label>
+        <label class="check"><input id="keep-headers" type="checkbox" /> Keep browser headers</label>
+        <label class="check"><input id="embed-secrets" type="checkbox" /> Put credentials in the script</label>
+        <span class="spacer"></span>
+        <button id="copy-script">Copy script</button>
+        <button id="save-env">Download .env</button>
+        <button id="save-script" class="primary">Download .sh</button>
+      </header>
+      <div class="script-layout">
+        <aside id="plan" class="plan"></aside>
+        <pre id="script" class="code" tabindex="0" aria-label="Generated script"></pre>
+      </div>
+    </section>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+  </body>
+</html>
