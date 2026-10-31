@@ -37,6 +37,7 @@ DELAY="${DELAY:-0.2}"
 {{settings}}
 
 mkdir -p "$OUT_DIR/headers"
+echo "Saving responses to $(cd "$OUT_DIR" && pwd)" >&2
 JAR="$OUT_DIR/cookies.txt"
 : > "$JAR"
 
@@ -55,13 +56,17 @@ request() {
   : > "$RESP"
   if [[ $method == GET ]]; then set -- --retry 3 --retry-delay 1 "$@"; fi
   if [[ $method == HEAD ]]; then set -- -I "$@"; else set -- -X "$method" "$@"; fi
-  status=$(curl -sS --compressed --connect-timeout 15 -o "$RESP" -D "$RESP_HEADERS" \
+  # --globoff stops curl reading [] and {} in a URL as patterns.
+  status=$(curl -sS --compressed --globoff --connect-timeout 15 -o "$RESP" -D "$RESP_HEADERS" \
     -w '%{http_code}' -b "$JAR" -c "$JAR" "$@" "$url")
   echo "$method $file: HTTP $status" >&2
   if (( status >= 400 )) && [[ -z ${ALLOW_ERROR:-} ]]; then
-    head -c 500 "$RESP" >&2
-    echo >&2
-    die "$file failed with HTTP $status"
+    # A short error message helps, but a whole web page would bury the log.
+    if ! head -c 500 "$RESP" | grep -qiE '<(!doctype|html)'; then
+      head -c 500 "$RESP" >&2
+      echo >&2
+    fi
+    die "$file failed with HTTP $status. The response is saved in $RESP"
   fi
 }
 

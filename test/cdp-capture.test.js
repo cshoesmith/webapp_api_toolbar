@@ -118,6 +118,15 @@ test('each hop of a redirect becomes its own entry', async () => {
   assert.equal(typeof entries[1].getContent, 'function');
 });
 
+test('each entry remembers the page that made it', async () => {
+  const { entries, recorder } = capture();
+  recorder.handle('Network.requestWillBeSent', sent({ documentURL: 'https://site.test/page' }));
+  recorder.handle('Network.responseReceived', received());
+  recorder.handle('Network.loadingFinished', finished);
+  await nextTick();
+  assert.equal(fromHarEntry(entries[0], 1).documentUrl, 'https://site.test/page');
+});
+
 test('post data omitted from the event is fetched', async () => {
   const { entries, recorder } = capture();
   recorder.handle('Network.requestWillBeSent', sent({
@@ -183,7 +192,6 @@ test('requests with the same URL stay separate', async () => {
   }
   await nextTick();
   assert.equal(entries.length, 2);
-  assert.notEqual(entries[0]._key, entries[1]._key);
 });
 
 test('reset forgets requests still in flight', async () => {

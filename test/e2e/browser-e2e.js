@@ -1,6 +1,6 @@
-// Loads the extension into a real browser, records real traffic both inside
-// DevTools and with DevTools closed, makes a script through the panel UI in each
-// case, and runs that script.
+// Loads the extension into a real browser, records real traffic from the
+// recorder panel, makes a script through its UI, and runs that script. Headless
+// browsers have no toolbar to click, so the panel opens as a tab here.
 //
 //   npm run test:e2e
 //   E2E_BROWSER="C:\path\to\browser.exe" npm run test:e2e
@@ -86,7 +86,7 @@ class Cdp {
   }
 }
 
-function launch(browser, profile, { devtools }) {
+function launch(browser, profile) {
   const child = spawn(browser, [
     '--headless=new',
     '--no-first-run',
@@ -96,7 +96,6 @@ function launch(browser, profile, { devtools }) {
     `--load-extension=${ROOT}`,
     `--disable-extensions-except=${ROOT}`,
     '--disable-features=DisableLoadExtensionCommandLineSwitch',
-    ...(devtools ? ['--auto-open-devtools-for-tabs'] : []),
     '--window-size=1500,950',
     'about:blank',
   ]);
@@ -126,6 +125,8 @@ async function checkScriptFlow({ cdp, ui, server, downloads, shoot }) {
   await waitFor(async () => parseInt(await ui.text('#count'), 10) >= 11, 'requests to be recorded');
   await sleep(800);
   console.log(`Recorded: ${await ui.text('#count')}`);
+  assert.match(await ui.text('#count'), /^13 of 14/, 'the call to another site starts unticked');
+  await ui.click('#tick-all');
 
   await ui.click('#rows tr:nth-child(2)');
   assert.match(await ui.text('#detail-body'), /curl '/);
@@ -151,6 +152,7 @@ async function checkScriptFlow({ cdp, ui, server, downloads, shoot }) {
   }
   assert.doesNotMatch(plan, /flow\.js/, 'script assets are not pulled in by chance');
   assert.match(plan, /COOKIES_/, 'cookies reached the extension');
+  assert.doesNotMatch(plan, /browser cache/, 'recording bypasses the cache');
   assert.match(results.bash, /authorization: Bearer \$\{ACCESS_TOKEN\}/, 'Authorization reached the extension');
 
   await ui.click('#back');
@@ -165,6 +167,7 @@ async function checkScriptFlow({ cdp, ui, server, downloads, shoot }) {
   console.log(`Downloaded: ${saved.join(', ')}`);
 
   server.rotate();
+  delete server.state.embedOrigin;
   const pwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0 ? 'pwsh' : 'powershell.exe';
   const script = saved.find((name) => name.endsWith('.ps1'));
   const running = spawn(pwsh, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { cwd: downloads, env: { ...process.env, DELAY: '0' } });
@@ -175,21 +178,22 @@ async function checkScriptFlow({ cdp, ui, server, downloads, shoot }) {
   assert.equal(status, 0, log.join(''));
   assert.equal(server.state.notes.length, 1, 'the script created a note with fresh tokens');
   assert.ok(server.state.hits.includes('GET /api/products/p_1005'), 'the loop reached the last product');
+  assert.equal(server.state.embedOrigin, server.base, 'the cross-origin call replayed with the right Origin');
   const env = readFileSync(join(downloads, saved.find((name) => name.endsWith('.env'))), 'utf8');
   assert.match(env, /^PASSWORD=/m, 'the password comes from the user');
   assert.match(env, /^COOKIES_/m);
   console.log('Script ran against revoked tokens: OK');
 }
 
-async function withBrowser(name, options, scenario) {
+async function withBrowser(scenario) {
   const browser = BROWSERS.find((path) => existsSync(path));
   assert.ok(browser, 'No browser found. Set E2E_BROWSER.');
-  console.log(`\n${name}\nBrowser: ${browser}`);
+  console.log(`Browser: ${browser}`);
 
   const scratch = mkdtempSync(join(tmpdir(), 'api-toolbar-e2e-'));
   const downloads = join(scratch, 'downloads');
   const server = await startServer();
-  const { child, url } = await launch(browser, join(scratch, 'profile'), options);
+  const { child, url } = await launch(browser, join(scratch, 'profile'));
   const cdp = await Cdp.connect(url);
 
   try {
@@ -197,7 +201,7 @@ async function withBrowser(name, options, scenario) {
     await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads, eventsEnabled: true });
     const targets = async () => (await cdp.send('Target.getTargets', { filter: [{}] })).targetInfos;
     const attach = async (target) => (await cdp.send('Target.attachToTarget', { targetId: target.targetId, flatten: true })).sessionId;
-    const pageTarget = await waitFor(async () => (await targets()).find((item) => item.type === 'page' && !item.url.startsWith('devtools://')), 'the page');
+    const pageTarget = await waitFor(async () => (await targets()).find((item) => item.type === 'page'), 'the page');
     const page = await attach(pageTarget);
     await cdp.send('Page.enable', {}, page);
     await scenario({ cdp, server, downloads, targets, attach, page });
@@ -217,50 +221,42 @@ async function withBrowser(name, options, scenario) {
 
 const IGNORED_FLAG = 'If this is missing, the browser ignored --load-extension, as branded Chrome does. Use Edge or Chrome for Testing.';
 
-function screenshots(cdp, session, prefix) {
+function screenshots(cdp, session) {
   return async (name) => {
     if (!process.env.E2E_SHOTS) return;
     await sleep(150);
     const { data } = await cdp.send('Page.captureScreenshot', { format: 'png' }, session);
-    writeFileSync(join(process.env.E2E_SHOTS, `${prefix}-${name}.png`), Buffer.from(data, 'base64'));
+    writeFileSync(join(process.env.E2E_SHOTS, `${name}.png`), Buffer.from(data, 'base64'));
   };
 }
 
-async function runFlowInPage(cdp, page) {
+async function runFlowInPage({ cdp, page, ui, server }) {
   await waitFor(() => cdp.evaluate(page, `typeof runFlow === 'function' && document.cookie.includes('device=')`), 'the page');
+  // Fetched before recording too, so the recorded call would come from the
+  // browser cache if recording left it on, and Chrome would then hide Origin.
+  const embed = `fetch(${JSON.stringify(`${server.otherBase}/api/embed`)}).then((response) => response.status)`;
+  assert.equal(await cdp.evaluate(page, embed), 200);
+  await sleep(400);
+  await ui.click('#clear');
   await cdp.evaluate(page, `runFlow((path, init) => fetch(path, init), ${JSON.stringify(PASSWORD)})`);
+  assert.equal(await cdp.evaluate(page, embed), 200);
 }
 
-async function inDevtools({ cdp, server, downloads, targets, attach, page }) {
-  const toolsTarget = await waitFor(async () => (await targets()).find((item) => item.url.startsWith('devtools://devtools/')), 'DevTools to open');
-  const tools = await attach(toolsTarget);
-
-  // The front end throws until it has finished starting up, so keep trying.
-  await waitFor(() => cdp.evaluate(tools, `(async () => {
-    try {
-      const UI = await import('devtools://devtools/bundled/ui/legacy/legacy.js');
-      const pane = UI.InspectorView.InspectorView.instance().tabbedPane;
-      const tab = pane.tabs.find((item) => item.title === 'API Toolbar');
-      if (!tab) return false;
-      pane.selectTab(tab.id);
-      return true;
-    } catch {
-      return false;
-    }
-  })()`), `the API Toolbar tab. ${IGNORED_FLAG}`, 30000);
-  console.log('Panel registered in DevTools');
-
-  const panelTarget = await waitFor(async () => (await targets()).find((item) => item.url.endsWith('/src/panel/panel.html')), 'the panel to open');
-  const ui = panelCall(cdp, await attach(panelTarget));
-  await waitFor(() => ui.text('#count'), 'the panel to render');
-
-  await cdp.send('Page.navigate', { url: `${server.base}/` }, page);
-  await runFlowInPage(cdp, page);
-  await checkScriptFlow({ cdp, ui, server, downloads, shoot: screenshots(cdp, tools, 'devtools') });
+// Pages count as calls, because some sites send their data as HTML. The second
+// address is another site, which moves the tab to a new browser process.
+async function checkPageCapture({ cdp, ui, page, server }) {
+  await ui.click('#clear');
+  for (const base of [server.base, server.otherBase]) {
+    await cdp.send('Page.navigate', { url: `${base}/page/sam` }, page);
+    await waitFor(async () => (await ui.text('#rows')).includes(new URL(base).host), `${base} to be recorded`);
+  }
+  await ui.click('#rows tr:last-child');
+  await ui.click('[data-tab="response"]');
+  await waitFor(async () => (await ui.text('#detail-body')).includes('Profile of Sam'), 'the HTML to be captured');
+  console.log('Pages are recorded with their HTML, across sites');
 }
 
-async function withoutDevtools({ cdp, server, downloads, targets, attach, page }) {
-  assert.ok(!(await targets()).some((item) => item.url.startsWith('devtools://')), 'DevTools stays closed');
+async function recordFromPanel({ cdp, server, downloads, targets, attach, page }) {
   const worker = await waitFor(async () => (await targets()).find((item) => item.url.endsWith('/src/background/service-worker.js')), `the service worker. ${IGNORED_FLAG}`);
   const background = await attach(worker);
   const extension = new URL(worker.url).host;
@@ -286,12 +282,13 @@ async function withoutDevtools({ cdp, server, downloads, targets, attach, page }
   await cdp.send('Emulation.setDeviceMetricsOverride', { width: 400, height: 900, deviceScaleFactor: 1, mobile: false }, panel);
   const ui = panelCall(cdp, panel);
   await waitFor(async () => (await ui.text('#record-label')) === 'Stop', 'recording to start by itself');
-  console.log(`Recording ${await ui.text('#target')} with DevTools closed`);
+  console.log(`Recording ${await ui.text('#target')}`);
 
-  await runFlowInPage(cdp, page);
-  await checkScriptFlow({ cdp, ui, server, downloads, shoot: screenshots(cdp, panel, 'side-panel') });
+  await runFlowInPage({ cdp, page, ui, server });
+  await checkScriptFlow({ cdp, ui, server, downloads, shoot: screenshots(cdp, panel) });
 
   await ui.click('#back');
+  await checkPageCapture({ cdp, ui, page, server });
   assert.equal(await isAttached(), true);
   await ui.click('#record');
   await waitFor(async () => !(await isAttached()), 'Stop to remove the debugger');
@@ -305,5 +302,4 @@ async function withoutDevtools({ cdp, server, downloads, targets, attach, page }
   console.log('Closing the panel detaches too');
 }
 
-await withBrowser('Recording inside DevTools', { devtools: true }, inDevtools);
-await withBrowser('Recording without DevTools', { devtools: false }, withoutDevtools);
+await withBrowser(recordFromPanel);

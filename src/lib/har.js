@@ -36,6 +36,22 @@ export function applyContent(record, text, encoding) {
   return record;
 }
 
+// Toolbar recordings bypass the cache, but an imported HAR file may not have.
+// A cached answer keeps Chrome's provisional headers, which lack the Origin that
+// every cross-origin call carries, and some servers refuse a call without it.
+// The Referer gives the same origin.
+function inferOrigin(record) {
+  if (record.resourceType !== 'xhr' && record.resourceType !== 'fetch') return;
+  const find = (wanted) => record.requestHeaders.find(({ name }) => name.toLowerCase() === wanted);
+  if (find('origin')) return;
+  try {
+    const page = new URL(find('referer')?.value).origin;
+    if (page !== new URL(record.url).origin) record.requestHeaders.push({ name: 'origin', value: page });
+  } catch {
+    // No usable Referer, so there is nothing to work it out from.
+  }
+}
+
 export function fromHarEntry(entry, id) {
   const { request = {}, response = {}, timings = {} } = entry;
   const content = response.content ?? {};
@@ -50,6 +66,8 @@ export function fromHarEntry(entry, id) {
     status: response.status ?? 0,
     statusText: response.statusText ?? '',
     resourceType: entry._resourceType ?? '',
+    fromCache: Boolean(entry._fromCache),
+    documentUrl: entry._documentUrl ?? '',
     requestHeaders: (request.headers ?? []).map(({ name, value }) => ({ name, value })),
     requestBody: null,
     responseHeaders: (response.headers ?? []).map(({ name, value }) => ({ name, value })),
@@ -72,6 +90,7 @@ export function fromHarEntry(entry, id) {
     }
   }
   if (content.text) applyContent(record, content.text, content.encoding);
+  inferOrigin(record);
   return record;
 }
 
@@ -82,6 +101,8 @@ export function toHarEntry(record) {
     time: record.time,
     timings: { send: 0, wait: record.wait ?? 0, receive: 0 },
     _resourceType: record.resourceType,
+    _fromCache: record.fromCache ? 'disk' : undefined,
+    _documentUrl: record.documentUrl || undefined,
     request: {
       method: record.method,
       url: record.url,

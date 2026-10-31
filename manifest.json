@@ -12,7 +12,6 @@
   "side_panel": {
     "default_path": "src/panel/panel.html"
   },
-  "devtools_page": "src/devtools/devtools.html",
   "action": {
     "default_title": "Record this tab's API calls",
     "default_icon": {

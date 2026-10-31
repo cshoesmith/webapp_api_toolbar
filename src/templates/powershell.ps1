@@ -31,6 +31,7 @@ $DelayMs = if ($env:DELAY) { [int]([double]$env:DELAY * 1000) } else { 200 }
 {{settings}}
 
 [void](New-Item -ItemType Directory -Force -Path (Join-Path $OutDir 'headers'))
+[Console]::Error.WriteLine("Saving responses to $OutDir")
 
 $Cookies = [Net.CookieContainer]::new()
 $Handler = [Net.Http.HttpClientHandler]::new()
@@ -96,8 +97,10 @@ function Send-Request {
     [IO.File]::WriteAllLines((Join-Path $OutDir "headers/$File.txt"), [string[]]@($headerLines))
     [Console]::Error.WriteLine("$Method ${File}: HTTP $status")
     if ($status -ge 400 -and -not $AllowError) {
-        [Console]::Error.WriteLine($text.Substring(0, [Math]::Min(500, $text.Length)))
-        throw "$File failed with HTTP $status"
+        # A short error message helps, but a whole web page would bury the log.
+        $preview = $text.Substring(0, [Math]::Min(500, $text.Length))
+        if ($preview -notmatch '<(!doctype|html)') { [Console]::Error.WriteLine($preview) }
+        throw "$File failed with HTTP $status. The response is saved in $(Join-Path $OutDir $File)"
     }
     [pscustomobject]@{ Status = $status; Text = $text; Headers = $responseHeaders; Url = $Url }
 }

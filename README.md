@@ -1,6 +1,6 @@
 # API Toolbar
 
-A Chrome and Edge extension for reverse engineering web app APIs. It records a site's API traffic, gives you a curl command for any call, and turns a whole session into a script that runs without the browser. You can record from the toolbar without opening DevTools, or from a tab inside F12.
+A Chrome and Edge extension for reverse engineering web app APIs. It records a site's API traffic, gives you a curl command for any call, and turns a whole session into a script that runs without the browser. Recording starts from a toolbar button, so you never need to open DevTools.
 
 The script is more than a list of replayed requests. API Toolbar works out how the calls depend on each other, so the script fetches fresh values as it runs:
 
@@ -19,34 +19,26 @@ Scripts can be exported as **bash**, **Python** or **PowerShell**.
 
 4. Pin **API Toolbar** from the extensions menu so its icon stays on the toolbar.
 
-There is no build step. The extension uses the `debugger` permission to record without DevTools, and the `sidePanel` permission to show the recorder beside the page.
+There is no build step. The extension uses the `debugger` permission to record the tab, and the `sidePanel` permission to show the recorder beside the page.
 
 ## Use it
 
 ### Record
 
-There are two ways to record, and both produce the same results.
-
-**From the toolbar, with no F12:**
-
 1. Open the site and click the **API Toolbar** icon. The recorder opens beside the page and starts recording that tab.
 2. Reload the page if you want the calls it makes while loading.
 3. Use the site, then press **Stop**.
 
-Chrome shows a "started debugging this browser" banner while this runs, and no extension can hide it. **Stop** removes the banner, and so does closing the recorder. To record a different tab, press **Stop**, switch tabs and press **Record**.
+Chrome shows a "started debugging this browser" banner while this runs, and no extension can hide it. **Stop** removes the banner, and so does closing the recorder. If the site's login uses a CAPTCHA, log in by hand first and then click the icon. The script reuses that session and skips the login.
 
-**Inside DevTools, with no banner:**
-
-1. Press **F12** on the site and choose the **API Toolbar** tab. If you can't see it, look under **»**.
-2. Use the site. Calls DevTools saw before you opened the tab are included too.
-
-Use DevTools mode for calls made from cross-site iframes or web workers, which toolbar recording can't see.
+To record a different tab, press **Stop**, switch tabs and press **Record**. The browser cache is off while recording, because Chrome only reports the full headers of calls that reach the network.
 
 ### See what was captured
 
-Recordings are not saved automatically. They stay in the recorder until you close it or close DevTools, so use **Export** to keep one. **Import** loads it again later.
+Recordings are not saved automatically. They stay in the recorder until you close it, so use **Export** to keep one. **Import** loads it again later.
 
-- Each row is one call. **API** hides page assets, and **All** shows everything.
+- Each row is one call or page. **API** hides page assets, and **All** shows everything.
+- Calls to other sites, which are mostly ads and analytics, start unticked. Tick any you want in the script.
 - Select a row to see its **curl** command, **Request**, **Response** and **Flow**, which shows the values it shares with other calls.
 - The **Inputs** column counts the values a call took from earlier responses.
 
@@ -66,7 +58,9 @@ To detect a loop, the recording needs at least two examples: scroll to page 2, o
 | Python 3 | `pip install requests` | `python api_script.py` |
 | PowerShell 5.1 or 7 | Nothing extra | `powershell -ExecutionPolicy Bypass -File api_script.ps1` |
 
-Responses are saved to `api_script_output/`, one file per request. Loop results are combined into `.ndjson` files.
+Responses are saved to `api_script_output/`, in the folder you run the script from, with one file per request. Loop results are combined into `.ndjson` files. The script prints the full path when it starts.
+
+If a step fails, the script stops and names the file holding that response. Steps that already ran keep their files.
 
 These environment variables are optional:
 
@@ -82,8 +76,10 @@ These environment variables are optional:
 The **Check before running** list in the script view flags the problems it can see. These are the ones to watch for:
 
 - **Scripts repeat real actions.** A recorded POST or DELETE runs again every time. For-each loops are only built for read requests, so a recorded delete never widens to everything in a list.
+- **Scripts can't pass a CAPTCHA.** CAPTCHA and tracker calls stay out of scripts unless you tick them, and a login behind a CAPTCHA is flagged. Log in by hand and record after that instead.
 - **Credentials expire.** Sessions and tokens in the `.env` file stop working eventually, and JWT expiry dates are shown in the warnings. Recording a login makes the script log in for itself, which avoids this.
 - **Some requests can't be replayed.** If a header is computed by the page's JavaScript, such as a request signature, the panel warns about it, but the script can't recreate it. Sites that fingerprint browsers may block these scripts too.
+- **Some calls are not recorded.** Only the tab's own page is captured, so calls made from cross-site iframes or web workers won't appear.
 - **Uploads and WebSockets are not replayed.** Chrome doesn't expose uploaded file contents, and scripts only make HTTP requests.
 - **Exports contain secrets.** HAR exports and `.env` files hold whatever was recorded, including live credentials.
 
@@ -123,7 +119,7 @@ Quoting is the part to get right, because captured data is untrusted and a hosti
 
 ```
 npm test            # Unit tests, plus scripts run against a live mock server
-npm run test:e2e    # The real extension in a headless browser, with DevTools open and closed
+npm run test:e2e    # The real extension in a headless browser
 ```
 
 Neither needs `npm install`. The browser test uses an installed browser with a throwaway profile, and `E2E_BROWSER` chooses which one. It needs a browser that honours `--load-extension`, such as Edge, Chromium or Chrome for Testing. Branded Chrome ignores that flag, so it can only be checked by hand with **Load unpacked**. Headless browsers have no toolbar to click, so the test opens the recorder as a tab and confirms that the icon is set to open the side panel.

@@ -1,9 +1,9 @@
 // Works out what a generated script has to do: which requests to run, which
 // values flow between them, and what the user must supply.
-import { correlate, linkKey, setCookiesOf, sourceKey } from './correlate.js';
+import { correlate, linkKey, setCookiesOf, sourceKey, USER_INPUT_KEY } from './correlate.js';
 import { hasOmittedUpload } from './curl.js';
 import { detectGroups } from './patterns.js';
-import { hostOf } from './classify.js';
+import { hostOf, isChallenge, isTracker } from './classify.js';
 import { isJwt, isSecretHeader, isSecretParam, jwtExpiry, splitAuthScheme } from './secrets.js';
 import { commentSafe, slug, toVarName } from './shell.js';
 import { jqPath, parseUrl, slotsOf } from './slots.js';
@@ -23,12 +23,22 @@ const GENERIC_KEY = /^(id|uuid|guid|name|value|key|token|code|slug)$/i;
 const WRAPPER_KEY = /^(data|result|results|response|payload|attributes|body)$/i;
 const TRACE_HEADER = /^(traceparent|tracestate|baggage|x-request-id|x-correlation-id|x-amzn-trace-id|x-b3-.*|x-datadog-.*|x-cloud-trace-context|sentry-trace)$/i;
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const CAPTCHA_FIELD = /captcha|turnstile/i;
 
 function isReplayable(record) {
   return /^https?:/i.test(record.url)
     && record.status > 0
     && record.method !== 'OPTIONS'
     && record.resourceType !== 'websocket';
+}
+
+// A login is behind a CAPTCHA if it sends an answer, or sends a password on a
+// page that was seen running a bot check.
+function isBehindCaptcha(record, sawChallenge) {
+  return slotsOf(record).some(({ kind, key }) => {
+    if (kind === 'url' || kind === 'path') return false;
+    return CAPTCHA_FIELD.test(key) || (sawChallenge && USER_INPUT_KEY.test(key));
+  });
 }
 
 function createNames() {
@@ -183,7 +193,12 @@ export function buildPlan(records, options = {}) {
     now = Date.now(),
   } = options;
 
-  const replayable = records.filter(isReplayable);
+  // Bot checks and trackers run only if ticked. They are not offered as sources,
+  // so they can never be pulled in as a dependency of something else.
+  const ticked = new Set(selectedIds);
+  const replayable = records
+    .filter(isReplayable)
+    .filter((record) => ticked.has(record.id) || !(isTracker(record) || isChallenge(record)));
   const byId = new Map(replayable.map((record) => [record.id, record]));
   const allLinks = correlate(replayable);
   const activeLinks = allLinks.filter((link) => !disabledLinks.has(linkKey(link)));
@@ -372,12 +387,25 @@ export function buildPlan(records, options = {}) {
     const list = mutating.map((step) => step.number).join(', ');
     warnings.push(`Step${mutating.length > 1 ? 's' : ''} ${list} can change data on the server each time the script runs.`);
   }
+  const sawChallenge = records.some(isChallenge);
+  const captchaSteps = steps.filter((step) => isBehindCaptcha(step.record, sawChallenge));
+  if (captchaSteps.length) {
+    const list = captchaSteps.map((step) => step.number).join(', ');
+    const subject = captchaSteps.length > 1 ? `Steps ${list} log` : `Step ${list} logs`;
+    warnings.unshift(
+      `${subject} in behind a CAPTCHA, which a script cannot pass. `
+      + 'Log in by hand, then press Record, so the script can reuse your session.',
+    );
+  }
   for (const step of steps) {
     if (hasOmittedUpload(step.record)) {
       warnings.push(`Step ${step.number} uploaded a file. Chrome does not expose file bytes, so edit this step before running it.`);
     }
     if (step.record.status >= 400) {
       warnings.push(`Step ${step.number} returned HTTP ${step.record.status} when recorded, so the script lets it fail.`);
+    }
+    if (step.record.fromCache) {
+      warnings.push(`Step ${step.number} came from the browser cache in the imported file, so some of its headers may be missing. If it fails, record it again with the toolbar.`);
     }
     if (step.record.truncated) {
       warnings.push(`Step ${step.number} had a response too large to keep in full, so links to later steps may be missing.`);

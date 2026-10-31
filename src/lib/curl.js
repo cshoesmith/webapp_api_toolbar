@@ -25,7 +25,7 @@ function bodyFlag(text) {
   return `--data-raw ${shellQuote(text)}`;
 }
 
-// Multipart payloads that carried a file reach DevTools without the file bytes.
+// Multipart payloads that carried a file are recorded without the file bytes.
 export function hasOmittedUpload(record) {
   const body = record.requestBody;
   if (!/multipart\//i.test(body?.mimeType ?? '')) return false;

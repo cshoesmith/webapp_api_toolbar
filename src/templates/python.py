@@ -10,6 +10,7 @@
 
 import json
 import os
+import re
 import sys
 import time
 from itertools import islice
@@ -43,6 +44,7 @@ DELAY = float(os.environ.get("DELAY", "0.2"))
 {{settings}}
 
 (OUT_DIR / "headers").mkdir(parents=True, exist_ok=True)
+print(f"Saving responses to {OUT_DIR.resolve()}", file=sys.stderr)
 
 session = requests.Session()
 retries = Retry(
@@ -66,8 +68,11 @@ def request(file, method, url, allow_error=False, **options):
     (OUT_DIR / "headers" / f"{file}.txt").write_text(headers, encoding="utf-8")
     print(f"{method} {file}: HTTP {resp.status_code}", file=sys.stderr)
     if resp.status_code >= 400 and not allow_error:
-        print(resp.text[:500], file=sys.stderr)
-        sys.exit(f"{file} failed with HTTP {resp.status_code}")
+        # A short error message helps, but a whole web page would bury the log.
+        preview = resp.text[:500]
+        if not re.search(r"<(!doctype|html)", preview, re.IGNORECASE):
+            print(preview, file=sys.stderr)
+        sys.exit(f"{file} failed with HTTP {resp.status_code}. The response is saved in {OUT_DIR / file}")
     return resp
 
 

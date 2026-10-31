@@ -132,6 +132,7 @@ describe('generated scripts against a live server', () => {
       const { dir, status, stdout, stderr } = await runScript(runtime, output);
       try {
         assert.equal(status, 0, `exit ${status}\n${stdout}\n${stderr}`);
+        assert.doesNotMatch(`${stdout}${stderr}`, /<html/i, 'page bodies stay out of the log');
         // Recorded 2 pages and 2 details, so these prove the loops widened.
         assert.ok(server.state.hits.includes('GET /api/products?page=4&limit=2'), 'stopped at the empty page');
         for (let id = 1001; id <= 1005; id += 1) {
@@ -171,6 +172,44 @@ describe('generated scripts against a live server', () => {
       const { dir, status, stdout, stderr } = await runScript(runtime, output);
       rmSync(dir, { recursive: true, force: true });
       assert.equal(status, 0, `${stdout}\n${stderr}`);
+    });
+
+    test(`${runtime.name}: an HTML error page is saved, not printed`, { skip }, async () => {
+      server.state.gateClosed = false;
+      const { api, records } = createRecorder(server.base);
+      await api('/api/gate');
+      server.state.gateClosed = true;
+      const output = generate(records, { language: runtime.language, scriptName: 'flow' });
+      const { dir, status, stdout, stderr } = await runScript(runtime, output);
+      try {
+        const log = `${stdout}${stderr}`;
+        assert.notEqual(status, 0);
+        assert.doesNotMatch(log, /Blocked page body/, 'the page is not in the log');
+        assert.match(log, /403/);
+        const name = readdirSync(outputDir(dir)).find((item) => item.includes('get_api_gate'));
+        assert.match(readFileSync(join(outputDir(dir), name), 'utf8'), /Blocked page body/);
+        assert.match(log, new RegExp(name.replace('.', '\\.')), 'the log says where it was saved');
+        assert.match(log, /flow_output/, 'the log says where responses go');
+      } finally {
+        server.state.gateClosed = false;
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test(`${runtime.name}: braces and brackets in a URL are sent once, as recorded`, { skip }, async () => {
+      const { api, records } = createRecorder(server.base);
+      await api('/api/echo?filter[status]=open&page[size]=2&vars={a,b}');
+      const [sent] = server.state.echoes.splice(0);
+      const output = generate(records, { language: runtime.language, scriptName: 'flow' });
+      const { dir, status, stdout, stderr } = await runScript(runtime, output);
+      try {
+        assert.equal(status, 0, `${stdout}\n${stderr}`);
+        const replayed = server.state.echoes.splice(0);
+        assert.equal(replayed.length, 1, 'one request, not one per pattern match');
+        assert.equal(decodeURIComponent(replayed[0].url), decodeURIComponent(sent.url));
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     test(`${runtime.name}: a hostile recording replays exactly and runs nothing`, { skip }, async () => {

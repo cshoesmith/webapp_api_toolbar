@@ -54,13 +54,31 @@ export async function startServer() {
       res.writeHead(200, { 'content-type': 'text/javascript' });
       return res.end(flow);
     }
+    if (path === '/page/sam') return send(res, 200, '<!doctype html><html><body><h1>Profile of Sam</h1></body></html>');
     if (path === '/favicon.ico') {
       res.writeHead(204);
       return res.end();
     }
+    // Works while recording, then turns into an HTML error page, as a site does
+    // when it blocks a replayed request.
+    if (path === '/api/gate') {
+      if (state.gateClosed) return send(res, 403, '<!doctype html><html><body>Blocked page body</body></html>');
+      return send(res, 200, { open: true });
+    }
     if (path === '/api/echo') {
       state.echoes.push({ method: req.method, url: req.url, headers: req.headers, body: raw });
       return send(res, 200, { ok: true });
+    }
+    // Rejects anything without Origin, and tells browsers to cache the answer.
+    if (path === '/api/embed') {
+      if (!req.headers.origin) {
+        return send(res, 400, { error: 'The origin header was not set in the request.', code: 1006 });
+      }
+      state.embedOrigin = req.headers.origin;
+      return send(res, 200, { campaign: 'c_123' }, {
+        'access-control-allow-origin': '*',
+        'cache-control': 'public, max-age=600',
+      });
     }
     if (path === '/api/login' && req.method === 'POST') {
       const { password } = JSON.parse(raw);
@@ -123,6 +141,8 @@ export async function startServer() {
   return {
     state,
     base: `http://127.0.0.1:${server.address().port}`,
+    // A different origin on the same server, for cross-origin calls.
+    otherBase: `http://localhost:${server.address().port}`,
     // Everything issued so far stops working, as it would on a later day.
     rotate() {
       state.sessions.clear();

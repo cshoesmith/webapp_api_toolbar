@@ -1,12 +1,13 @@
 // Finds where each value in a request came from by replaying the session in
 // time order and matching request values against earlier responses.
+import { sameSite } from './classify.js';
 import { jqPath, lastKey, slotsOf, walkJson } from './slots.js';
 
 // Headers that describe the response rather than carry data for the next call.
 const SKIP_RESPONSE_HEADER = /^(date|server|vary|age|via|expires|etag|last-modified|set-cookie|connection|keep-alive|transfer-encoding|content-.*|cache-control|pragma|access-control-.*|strict-transport-security|x-content-type-options|x-frame-options|x-xss-protection|referrer-policy|permissions-policy|cross-origin-.*|alt-svc|report-to|nel|cf-.*|x-cache.*|x-served-by|x-timer|x-request-id|x-amz-cf-.*|x-powered-by|accept-ranges|timing-allow-origin|server-timing)$/i;
 const ID_KEY = /(^|[_-])(id|uuid|guid|slug|handle|key|token|cursor|next|after|marker|continuation|ref|code|sku)$|[a-z0-9](Id|ID|Uuid|Guid|Slug|Key|Token|Cursor|Marker|Ref|Code|Sku)$/;
 // People type these. If one also appears in a response, that is a coincidence.
-const USER_INPUT_KEY = /pass(word|wd|phrase)?$|pwd$|otp$|(^|[_-])pin$/i;
+export const USER_INPUT_KEY = /pass(word|wd|phrase)?$|pwd$|otp$|(^|[_-])pin$/i;
 const TOKEN_PATTERNS = [/[\w\-.~+/=%]{8,}/g, /[\w\-.~%]{8,}/g];
 
 const MIN_TOKEN_LENGTH = 8;
@@ -175,8 +176,11 @@ function textSource(record, index, value, slot) {
   return null;
 }
 
-function findInText(records, value, slot) {
+// Only the consumer's own site counts. A long token turning up in someone else's
+// script is usually a coincidence, and a missed link just keeps the recorded value.
+function findInText(records, value, slot, consumer) {
   for (let index = records.length - 1; index >= 0; index -= 1) {
+    if (!sameSite(records[index].url, consumer.url)) continue;
     const position = records[index].responseBody.indexOf(value);
     if (position === -1) continue;
     const source = textSource(records[index], position, value, slot);
@@ -263,7 +267,7 @@ export function correlate(records) {
         const candidates = known.get(match[0]);
         let source = candidates && pickSource(candidates, slot, false);
         if (!source && isOpaque(match[0]) && !literal.has(match[0])) {
-          source = findInText(textBodies, match[0], slot);
+          source = findInText(textBodies, match[0], slot, record);
         }
         if (source) {
           addLink(record, slot, start, match[0], source);

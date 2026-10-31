@@ -376,6 +376,75 @@ test('computed signatures and expired tokens are flagged', fresh(() => {
   assert.ok(plan.warnings.some((text) => /expired/.test(text)));
 }));
 
+test('a step answered from the browser cache is flagged', fresh(() => {
+  const cached = record({ url: `${API}/a`, response: {} });
+  cached.fromCache = true;
+  const { plan } = generate([cached], {});
+  assert.ok(plan.warnings.some((text) => /browser cache/.test(text)));
+}));
+
+test('trackers and bot checks are never pulled in as dependencies', fresh(() => {
+  const records = [
+    record({ url: 'https://www.googletagmanager.com/gtm.js?id=GTM-ABC', response: 'var t = "tok_shared_123456";', responseType: 'text/javascript', resourceType: 'script' }),
+    record({ url: 'https://www.google.com/recaptcha/api2/reload', response: { token: 'tok_shared_123456' } }),
+    record({ url: `${API}/data?ref=tok_shared_123456`, response: {} }),
+  ];
+  const { plan, script } = generate(records, { selectedIds: [3] });
+  assert.deepEqual(plan.steps.map((step) => step.record.id), [3]);
+  assert.match(script, /ref=tok_shared_123456/);
+}));
+
+test('ticking a bot check call yourself still includes it', fresh(() => {
+  const records = [record({ url: 'https://www.google.com/recaptcha/api2/clr', response: {} })];
+  assert.equal(generate(records, { selectedIds: [1] }).plan.steps.length, 1);
+}));
+
+test('text on another site is not a source', fresh(() => {
+  const records = [
+    record({ url: 'https://appleid.cdn-apple.com/auth.js', response: 'x("Ab3xYz9kLm2Pq7Rs")', responseType: 'text/javascript' }),
+    record({ url: `${API}/data`, headers: { 'x-build': 'Ab3xYz9kLm2Pq7Rs' }, response: {} }),
+  ];
+  assert.equal(generate(records, { selectedIds: [2] }).plan.steps.length, 1);
+}));
+
+test('text on another host of the same site is a source', fresh(() => {
+  const records = [
+    record({ url: 'https://cdn.example.com/app.js', response: 'init({build:"Ab3xYz9kLm2Pq7Rs",x:1})', responseType: 'text/javascript' }),
+    record({ url: `${API}/data`, headers: { 'x-build': 'Ab3xYz9kLm2Pq7Rs' }, response: {} }),
+  ];
+  assert.equal(generate(records, { selectedIds: [2] }).plan.steps.length, 2);
+}));
+
+test('a login that sends a CAPTCHA answer is flagged first', fresh(() => {
+  const records = [record({
+    method: 'POST',
+    url: `${API}/login`,
+    bodyType: 'application/x-www-form-urlencoded',
+    body: 'user=sam&g-recaptcha-response=03AFcWeA123456',
+    response: {},
+  })];
+  const [warning] = generate(records, {}).plan.warnings;
+  assert.match(warning, /Step 1 logs in behind a CAPTCHA/);
+}));
+
+test('a password sent on a page with a bot check is flagged', fresh(() => {
+  const records = [
+    record({ url: 'https://www.gstatic.com/recaptcha/releases/x/recaptcha__en.js', resourceType: 'script' }),
+    record({ method: 'POST', url: `${API}/login`, body: { password: 'hunter2hunter2' }, response: {} }),
+  ];
+  assert.match(generate(records, { selectedIds: [2] }).plan.warnings[0], /CAPTCHA/);
+}));
+
+test('no CAPTCHA warning for a recording made after logging in', fresh(() => {
+  const records = [
+    record({ url: 'https://www.gstatic.com/recaptcha/releases/x/recaptcha__en.js', resourceType: 'script' }),
+    record({ url: `${API}/orders`, headers: { authorization: 'Bearer tok_abcdef123456' }, response: {} }),
+  ];
+  const { plan } = generate(records, { selectedIds: [2] });
+  assert.ok(!plan.warnings.some((text) => /CAPTCHA/.test(text)));
+  assert.equal(plan.config[0].name, 'ACCESS_TOKEN');
+}));
+
 test('a hostile recording cannot inject commands', fresh(() => {
   const evil = "x'; touch PWNED; echo '";
   const records = [

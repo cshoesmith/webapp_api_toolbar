@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Chrome DevTools extension that records API traffic and generates curl commands and scripts in bash, Python and PowerShell.",
+  "description": "Chrome extension that records a site's API traffic and generates curl commands and scripts in bash, Python and PowerShell.",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "test:e2e": "node test/e2e/devtools-e2e.js"
+    "test:e2e": "node test/e2e/browser-e2e.js"
   }
 }

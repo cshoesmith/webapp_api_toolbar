@@ -1,4 +1,4 @@
-// Stands in for DevTools in Node: runs requests and keeps HAR-shaped records.
+// Stands in for the browser in Node: runs requests and keeps HAR-shaped records.
 import { fromHarEntry } from '../../src/lib/har.js';
 
 export function createRecorder(base, { cookies: initial = [] } = {}) {

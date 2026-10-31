@@ -1,5 +1,5 @@
-// Turns Chrome DevTools Protocol network events into HAR entries, so recording
-// through chrome.debugger feeds the same pipeline as the DevTools panel.
+// Turns Chrome DevTools Protocol network events into HAR entries, the format the
+// rest of the app reads, including when a HAR file is imported.
 //
 // Chrome reports the headers it really sent, including Cookie and Set-Cookie, in
 // separate "ExtraInfo" events that can arrive before or after the main event, and
@@ -23,7 +23,6 @@ export class CdpCapture {
     this.getBody = getBody;
     this.getPostData = getPostData;
     this.flows = new Map();
-    this.nextKey = 1;
   }
 
   handle(method, params) {
@@ -66,10 +65,8 @@ export class CdpCapture {
       params,
       requestExtra: flow.spare.requestExtra.shift() ?? null,
       responseExtra: flow.spare.responseExtra.shift() ?? null,
-      key: `cdp-${this.nextKey}`,
       hasBody: false,
     });
-    this.nextKey += 1;
   }
 
   addExtra(params, field) {
@@ -143,12 +140,12 @@ export class CdpCapture {
   }
 
   toEntry(hop, postData) {
-    const { requestId, request, wallTime, timestamp, type } = hop.params;
+    const { requestId, request, wallTime, timestamp, type, documentURL } = hop.params;
     const { response } = hop;
     const headers = headerList(hop.requestExtra?.headers ?? request.headers);
     const entry = {
-      _key: hop.key,
       _resourceType: String(hop.type ?? type ?? 'other').toLowerCase(),
+      _documentUrl: documentURL,
       startedDateTime: new Date(wallTime * 1000).toISOString(),
       time: Math.max(0, ((hop.endTime ?? timestamp) - timestamp) * 1000),
       timings: { wait: response?.timing?.receiveHeadersEnd ?? 0 },

@@ -1,6 +1,6 @@
-// The DevTools panel. Captured content is shown with textContent only, because
+// The recorder panel. Captured content is shown with textContent only, because
 // response bodies and URLs come from sites that may be hostile.
-import { hostOf, isApiRequest } from '../lib/classify.js';
+import { hostOf, isApiRequest, isThirdParty } from '../lib/classify.js';
 import { correlate } from '../lib/correlate.js';
 import { toCurl, toCurlList } from '../lib/curl.js';
 import { generate, LANGUAGES, loadTemplates } from '../lib/generate.js';
@@ -13,19 +13,13 @@ const CONTENT_TIMEOUT_MS = 3000;
 const MAX_STORED_CHARS = 256 * 1024 * 1024;
 const LINK_REFRESH_MS = 400;
 const LANGUAGE_KEY = 'api-toolbar-language';
-const devtools = globalThis.chrome?.devtools ?? null;
-
-// Without DevTools around, the panel records through chrome.debugger instead.
-const tabRecorder = !devtools && globalThis.chrome?.debugger
-  ? createTabRecorder({ onEntry: capture, onDetach: handleDetach })
-  : null;
+const tabRecorder = createTabRecorder({ onEntry: capture, onDetach: handleDetach });
 
 const state = {
-  recording: Boolean(devtools),
+  recording: false,
   target: '',
   notice: '',
   records: [],
-  seen: new Set(),
   nextId: 1,
   storedChars: 0,
   unticked: new Set(),
@@ -88,8 +82,8 @@ function toast(message) {
   }, 2200);
 }
 
-// DevTools panels are not granted clipboard-write, so the async clipboard API
-// fails there and the older selection-based copy is tried first.
+// The selection-based copy goes first because the async clipboard API also
+// needs the page to have focus, which a side panel often does not.
 async function copyText(text, message) {
   const area = h('textarea', { value: text });
   area.style.position = 'fixed';
@@ -133,16 +127,19 @@ function wantsBody(record) {
   return state.storedChars < MAX_STORED_CHARS && (isTextMime(record.mimeType) || isApiRequest(record));
 }
 
+// Other sites' calls stay listed, but a script only includes them if ticked.
+function tickByDefault(record) {
+  if (isThirdParty(record)) state.unticked.add(record.id);
+}
+
 function addRecord(record) {
   state.records.push(record);
+  tickByDefault(record);
   scheduleRender();
   scheduleLinks();
 }
 
 function capture(entry) {
-  const key = entry._key ?? `${entry.startedDateTime}|${entry.request?.method}|${entry.request?.url}`;
-  if (state.seen.has(key)) return;
-  state.seen.add(key);
   const record = fromHarEntry(entry, state.nextId);
   state.nextId += 1;
   if (!wantsBody(record) || typeof entry.getContent !== 'function') {
@@ -207,27 +204,15 @@ function handleDetach() {
 }
 
 async function toggleRecording() {
-  if (!tabRecorder) state.recording = !state.recording;
-  else if (state.recording) await stopTabRecording();
+  if (state.recording) await stopTabRecording();
   else await startTabRecording();
   renderToolbar();
   renderList();
 }
 
 function startCapture() {
-  if (tabRecorder) {
-    addEventListener('pagehide', () => tabRecorder.stop());
-    startTabRecording();
-    return;
-  }
-  if (!devtools) return;
-  devtools.network.onRequestFinished.addListener((entry) => {
-    if (state.recording) capture(entry);
-  });
-  // Pick up what DevTools saw before this panel was first opened.
-  devtools.network.getHAR((log) => {
-    if (state.recording) log.entries.forEach(capture);
-  });
+  addEventListener('pagehide', () => tabRecorder.stop());
+  startTabRecording();
 }
 
 // List
@@ -335,8 +320,7 @@ function renderEmpty(visible) {
   } else if (state.records.length > 0) {
     empty.textContent = `${state.records.length} requests are hidden by the current filter. Choose All to see them.`;
   } else if (state.recording) {
-    const reload = tabRecorder ? ' Reload the page to catch calls made while it loads.' : '';
-    empty.textContent = `Waiting for traffic. Use the page, and its API calls will appear here.${reload}`;
+    empty.textContent = 'Waiting for traffic. Use the page, and its API calls will appear here. Reload the page to catch calls made while it loads.';
   } else {
     empty.textContent = 'Recording is stopped. Press Record, then use the page.';
   }
@@ -349,14 +333,9 @@ function renderList() {
   renderCount();
 }
 
-function recordLabel() {
-  if (!state.recording) return 'Record';
-  return tabRecorder ? 'Stop' : 'Recording';
-}
-
 function renderToolbar() {
   $('record').setAttribute('aria-pressed', String(state.recording));
-  $('record-label').textContent = recordLabel();
+  $('record-label').textContent = state.recording ? 'Stop' : 'Record';
   $('target').textContent = state.target;
   $('scope-api').setAttribute('aria-pressed', String(state.scope === 'api'));
   $('scope-all').setAttribute('aria-pressed', String(state.scope === 'all'));
@@ -690,7 +669,6 @@ function showScripter(show) {
 
 function clearAll() {
   state.records = [];
-  state.seen.clear();
   state.storedChars = 0;
   state.unticked.clear();
   state.disabledLinks.clear();
@@ -708,6 +686,7 @@ async function importHar(file) {
     for (const record of records) {
       trackBody(record);
       state.records.push(record);
+      tickByDefault(record);
     }
     scheduleRender();
     scheduleLinks();
@@ -801,18 +780,13 @@ function wireEvents() {
   }
 }
 
-function applyTheme(name) {
-  document.documentElement.dataset.theme = name === 'dark' ? 'dark' : 'light';
-}
-
 function initTheme() {
-  const panels = devtools?.panels;
-  if (panels) {
-    applyTheme(panels.themeName);
-    panels.setThemeChangeHandler?.(applyTheme);
-  } else if (matchMedia('(prefers-color-scheme: dark)').matches) {
-    applyTheme('dark');
-  }
+  const dark = matchMedia('(prefers-color-scheme: dark)');
+  const apply = () => {
+    document.documentElement.dataset.theme = dark.matches ? 'dark' : 'light';
+  };
+  apply();
+  dark.addEventListener('change', apply);
 }
 
 function renderLanguageOptions() {

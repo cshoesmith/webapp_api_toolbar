@@ -1,5 +1,4 @@
-// Records a tab through chrome.debugger, so DevTools does not need to be open.
-// Chrome shows its "started debugging" banner for as long as this is attached.
+// Records a tab through chrome.debugger. Chrome shows its "started debugging" banner for as long as this is attached.
 import { CdpCapture } from '../lib/cdp-capture.js';
 
 const PROTOCOL_VERSION = '1.3';
@@ -36,6 +35,8 @@ export function createTabRecorder({ onEntry, onDetach }) {
       await chrome.debugger.attach({ tabId }, PROTOCOL_VERSION);
       target = { tabId };
       await send('Network.enable', NETWORK_OPTIONS);
+      // Chrome only reports the full headers of calls that reach the network.
+      await send('Network.setCacheDisabled', { cacheDisabled: true });
       const info = await send('Target.getTargetInfo').catch(() => null);
       return info?.targetInfo?.url ?? '';
     },
