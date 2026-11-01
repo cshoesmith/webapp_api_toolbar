@@ -5,7 +5,7 @@
 # @end
 #
 # Run with: bash {{script_name}}.sh
-# Responses are saved to OUT_DIR, one file per request.
+# Each run saves its responses to a new dated folder, one file per request.
 
 set -euo pipefail
 umask 077
@@ -26,7 +26,7 @@ if [[ -f $ENV_FILE ]]; then
   set +a
 fi
 
-OUT_DIR="${OUT_DIR:-./{{script_name}}_output}"
+OUT_DIR="${OUT_DIR:-./{{script_name}}_output/$(date +%Y-%m-%d_%H-%M-%S)}"
 # @if has_loops
 # Safety limits for loops, and a pause between requests to stay polite.
 MAX_PAGES="${MAX_PAGES:-100}"

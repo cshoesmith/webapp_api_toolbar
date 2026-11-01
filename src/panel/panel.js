@@ -5,15 +5,23 @@ import { correlate } from '../lib/correlate.js';
 import { toCurl, toCurlList } from '../lib/curl.js';
 import { generate, LANGUAGES, loadTemplates } from '../lib/generate.js';
 import { applyContent, fromHar, fromHarEntry, isTextMime, toHar } from '../lib/har.js';
+import { recordingFolder, stepScreens } from '../lib/recording-files.js';
 import { displayPath } from '../lib/request-model.js';
+import { createScreenTaker } from '../lib/screen-taker.js';
 import { jqPath } from '../lib/slots.js';
 import { createTabRecorder } from './tab-recorder.js';
 
 const CONTENT_TIMEOUT_MS = 3000;
 const MAX_STORED_CHARS = 256 * 1024 * 1024;
 const LINK_REFRESH_MS = 400;
+const REVOKE_DOWNLOAD_MS = 60000;
+const SAVE_CHECKS = 30;
+const SAVE_CHECK_MS = 100;
+const TOAST_MS = 2200;
+const LONG_TOAST_MS = 9000;
 const LANGUAGE_KEY = 'api-toolbar-language';
 const tabRecorder = createTabRecorder({ onEntry: capture, onDetach: handleDetach });
+const screenTaker = createScreenTaker({ capture: () => tabRecorder.captureScreen(), onScreen: addScreen });
 
 const state = {
   recording: false,
@@ -22,6 +30,8 @@ const state = {
   records: [],
   nextId: 1,
   storedChars: 0,
+  folder: '',
+  lastScreen: null,
   unticked: new Set(),
   selectedId: null,
   scope: 'api',
@@ -72,14 +82,14 @@ function pathOf(url) {
 }
 
 let toastTimer;
-function toast(message) {
+function toast(message, duration = TOAST_MS) {
   const node = $('toast');
   node.textContent = message;
   node.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
     node.hidden = true;
-  }, 2200);
+  }, duration);
 }
 
 // The selection-based copy goes first because the async clipboard API also
@@ -108,13 +118,55 @@ async function copyText(text, message) {
   toast(copied ? message : 'Copy failed. Select the text and copy it by hand.');
 }
 
-function saveFile(name, text, type) {
-  const url = URL.createObjectURL(new Blob([text], { type }));
-  const link = h('a', { href: url, download: name });
-  document.body.append(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10000);
+// Saving again replaces the older copy, so the folder stays one recording. The
+// type stops Chrome renaming a file to suit it, as it would turn .env into .txt.
+async function saveFile({ name, contents }) {
+  const url = URL.createObjectURL(new Blob([contents], { type: 'application/octet-stream' }));
+  const id = await chrome.downloads.download({
+    url,
+    filename: `${state.folder}/${name}`,
+    conflictAction: 'overwrite',
+    saveAs: false,
+  });
+  setTimeout(() => URL.revokeObjectURL(url), REVOKE_DOWNLOAD_MS);
+  return id;
+}
+
+// A download id only means Chrome started. It may still fail, or hold a script
+// until the user approves it, and the file isn't on disk until then.
+async function settledDownloads(ids) {
+  for (let check = 1; ; check += 1) {
+    const items = (await Promise.all(ids.map((id) => chrome.downloads.search({ id })))).flat();
+    if (check === SAVE_CHECKS || items.every((item) => item.state !== 'in_progress' || item.danger !== 'safe')) {
+      return items;
+    }
+    await new Promise((done) => { setTimeout(done, SAVE_CHECK_MS); });
+  }
+}
+
+const fileNames = (items) => items.map((item) => item.filename.split(/[\\/]/).pop()).join(', ');
+
+async function saveFiles(files, message) {
+  try {
+    const ids = [];
+    for (const file of files) ids.push(await saveFile(file));
+    const items = await settledDownloads(ids);
+    const failed = items.filter((item) => item.state === 'interrupted');
+    const held = items.filter((item) => item.state === 'in_progress' && item.danger !== 'safe');
+    if (failed.length) {
+      toast(`Could not save ${failed.length} of ${files.length} files: ${failed[0].error}`, LONG_TOAST_MS);
+    } else if (held.length) {
+      toast(`The browser is holding ${fileNames(held)} back. Choose Keep in its downloads list to finish saving.`, LONG_TOAST_MS);
+    } else {
+      toast(message);
+    }
+  } catch (error) {
+    toast(`Could not save: ${error.message}`, LONG_TOAST_MS);
+  }
+}
+
+function jpegBytes(base64) {
+  return Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
 }
 
 // Capture
@@ -132,9 +184,31 @@ function tickByDefault(record) {
   if (isThirdParty(record)) state.unticked.add(record.id);
 }
 
+// Named after the first record, so Clear starts a new folder.
+function nameFolder(record) {
+  const started = new Date(record.startedAt || Date.now());
+  state.folder ||= recordingFolder(started, state.target || hostOf(record.url));
+}
+
+function wantsScreen(record) {
+  return state.recording && state.storedChars < MAX_STORED_CHARS && isApiRequest(record);
+}
+
+function addScreen(records, data) {
+  // An unchanged page gives an identical picture, so one copy can be shared.
+  if (data !== state.lastScreen) {
+    state.lastScreen = data;
+    state.storedChars += data.length;
+  }
+  for (const record of records) record.screen = state.lastScreen;
+  if (state.tab === 'screen') renderDetail();
+}
+
 function addRecord(record) {
   state.records.push(record);
   tickByDefault(record);
+  nameFolder(record);
+  if (wantsScreen(record)) screenTaker.add(record);
   scheduleRender();
   scheduleLinks();
 }
@@ -192,6 +266,7 @@ async function startTabRecording() {
 async function stopTabRecording() {
   state.recording = false;
   state.target = '';
+  screenTaker.reset();
   await tabRecorder.stop();
 }
 
@@ -199,6 +274,7 @@ async function stopTabRecording() {
 function handleDetach() {
   state.recording = false;
   state.target = '';
+  screenTaker.reset();
   renderToolbar();
   renderList();
 }
@@ -482,11 +558,23 @@ function renderFlowTab(record) {
   return parts;
 }
 
+function renderScreenTab(record) {
+  if (!record.screen) {
+    return [h('p', { class: 'muted' }, 'No screen was captured for this call. Imported recordings don\'t have screens.')];
+  }
+  return [h('img', {
+    class: 'screen',
+    src: `data:image/jpeg;base64,${record.screen}`,
+    alt: `The page after ${record.method} ${pathOf(record.url)}`,
+  })];
+}
+
 const TAB_RENDERERS = {
   curl: renderCurlTab,
   request: renderRequestTab,
   response: renderResponseTab,
   flow: renderFlowTab,
+  screen: renderScreenTab,
 };
 
 function renderDetail() {
@@ -528,7 +616,6 @@ function renderLanguage() {
   const language = LANGUAGES.find((item) => item.id === state.language);
   $('language').value = language.id;
   $('make-script').textContent = `Make me a ${language.id === 'bash' ? 'bash' : language.label} script`;
-  $('save-script').textContent = `Download .${language.extension}`;
 }
 
 function buildOutput() {
@@ -542,7 +629,15 @@ function buildOutput() {
   });
   renderScript();
   renderPlan();
-  $('save-env').disabled = !state.output.env;
+}
+
+// The script, its .env and a screen for each step, all in one folder.
+function saveRecording() {
+  const { plan, script, env, extension, byteOrderMark } = state.output;
+  const files = [{ name: `${scriptName()}.${extension}`, contents: `${byteOrderMark ? '﻿' : ''}${script}` }];
+  if (env) files.push({ name: `${scriptName()}.env`, contents: env });
+  for (const { name, screen } of stepScreens(plan)) files.push({ name, contents: jpegBytes(screen) });
+  return saveFiles(files, `Saved ${files.length} files to ${state.folder} in your downloads`);
 }
 
 function renderScript() {
@@ -651,7 +746,7 @@ function renderPlan() {
     if (plan.embedSecrets) {
       parts.push(h('div', { class: 'warning' }, 'This script now holds live credentials. Do not share it.'));
     } else {
-      parts.push(h('p', { class: 'note' }, 'Keep the downloaded .env next to the script. It holds the values from this session.'));
+      parts.push(h('p', { class: 'note' }, 'Keep the saved .env next to the script. It holds the values from this session.'));
     }
   }
   if (plan.warnings.length) {
@@ -668,8 +763,11 @@ function showScripter(show) {
 // Wiring
 
 function clearAll() {
+  screenTaker.reset();
   state.records = [];
   state.storedChars = 0;
+  state.folder = '';
+  state.lastScreen = null;
   state.unticked.clear();
   state.disabledLinks.clear();
   state.selectedId = null;
@@ -687,6 +785,7 @@ async function importHar(file) {
       trackBody(record);
       state.records.push(record);
       tickByDefault(record);
+      nameFolder(record);
     }
     scheduleRender();
     scheduleLinks();
@@ -745,8 +844,10 @@ function wireEvents() {
   });
   $('export').addEventListener('click', () => {
     const json = JSON.stringify(toHar(orderedRecords()), null, 2);
-    saveFile('api_toolbar_session.har', json, 'application/json');
-    toast('Saved. This file contains any credentials that were recorded.');
+    saveFiles(
+      [{ name: 'api_toolbar_session.har', contents: json }],
+      `Saved to ${state.folder}. This file contains any credentials that were recorded.`,
+    );
   });
   $('copy-all').addEventListener('click', () => {
     const records = tickedRecords();
@@ -764,13 +865,7 @@ function wireEvents() {
     setLanguage(event.target.value);
     buildOutput();
   });
-  $('save-script').addEventListener('click', () => {
-    const { script, extension, byteOrderMark } = state.output;
-    saveFile(`${scriptName()}.${extension}`, `${byteOrderMark ? '\uFEFF' : ''}${script}`, 'text/plain');
-  });
-  $('save-env').addEventListener('click', () => {
-    saveFile(`${scriptName()}.env`, state.output.env, 'text/plain');
-  });
+  $('save-folder').addEventListener('click', saveRecording);
   $('close-detail').addEventListener('click', () => selectRecord(null));
   for (const tab of document.querySelectorAll('[role="tab"]')) {
     tab.addEventListener('click', () => {

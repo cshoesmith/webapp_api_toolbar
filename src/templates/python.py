@@ -6,7 +6,7 @@
 #
 # Needs the requests package: pip install requests
 # Run with: python {{script_name}}.py
-# Responses are saved to OUT_DIR, one file per request.
+# Each run saves its responses to a new dated folder, one file per request.
 
 import json
 import os
@@ -33,7 +33,7 @@ if ENV_FILE.exists():
             name, _, value = line.partition("=")
             os.environ[name] = json.loads(value)
 
-OUT_DIR = Path(os.environ.get("OUT_DIR", "./{{script_name}}_output"))
+OUT_DIR = Path(os.environ.get("OUT_DIR", "./{{script_name}}_output/" + time.strftime("%Y-%m-%d_%H-%M-%S")))
 # @if has_loops
 # Safety limits for loops, and a pause between requests to stay polite.
 MAX_PAGES = int(os.environ.get("MAX_PAGES", "100"))

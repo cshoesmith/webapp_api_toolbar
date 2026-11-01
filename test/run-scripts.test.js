@@ -6,6 +6,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { generate, loadTemplates } from '../src/lib/generate.js';
 import { bashPath } from './bash-path.js';
@@ -72,15 +73,14 @@ const RUNTIMES = [
 
 // Must stay async: the mock server lives in this process and spawnSync would
 // stop it answering, leaving the script to time out.
-function runScript(runtime, output) {
-  const dir = mkdtempSync(join(tmpdir(), 'api-toolbar-'));
+function runScript(runtime, output, { dir = mkdtempSync(join(tmpdir(), 'api-toolbar-')), env = {} } = {}) {
   const file = join(dir, `flow.${output.extension}`);
   writeFileSync(file, `${output.byteOrderMark ? '﻿' : ''}${output.script}`);
   if (output.env) writeFileSync(join(dir, 'flow.env'), output.env);
   return new Promise((resolve) => {
     const child = spawn(runtime.command, runtime.args(`flow.${output.extension}`), {
       cwd: dir,
-      env: { ...process.env, DELAY: '0', ...runtime.env },
+      env: { ...process.env, DELAY: '0', ...runtime.env, ...env },
       timeout: 120000,
     });
     let stdout = '';
@@ -91,8 +91,10 @@ function runScript(runtime, output) {
   });
 }
 
+// The newest run's dated folder.
 function outputDir(dir) {
-  return join(dir, readdirSync(dir).find((name) => name.endsWith('_output')));
+  const runs = join(dir, readdirSync(dir).find((name) => name.endsWith('_output')));
+  return join(runs, readdirSync(runs).sort().at(-1));
 }
 
 function lines(dir, ending) {
@@ -172,6 +174,25 @@ describe('generated scripts against a live server', () => {
       const { dir, status, stdout, stderr } = await runScript(runtime, output);
       rmSync(dir, { recursive: true, force: true });
       assert.equal(status, 0, `${stdout}\n${stderr}`);
+    });
+
+    test(`${runtime.name}: each run saves to its own dated folder`, { skip }, async () => {
+      const { api, records } = createRecorder(server.base);
+      await api('/api/echo');
+      const output = generate(records, { language: runtime.language, scriptName: 'flow' });
+      const { dir } = await runScript(runtime, output);
+      try {
+        await sleep(1100);
+        await runScript(runtime, output, { dir });
+        const runs = readdirSync(join(dir, 'flow_output'));
+        assert.equal(runs.length, 2, runs.join(', '));
+        for (const run of runs) assert.match(run, /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/);
+        await runScript(runtime, output, { dir, env: { OUT_DIR: 'chosen' } });
+        assert.ok(readdirSync(join(dir, 'chosen')).some((name) => name.includes('get_api_echo')), 'OUT_DIR is used as given');
+      } finally {
+        server.state.echoes.length = 0;
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     test(`${runtime.name}: an HTML error page is saved, not printed`, { skip }, async () => {

@@ -24,7 +24,7 @@
         <span id="count" class="muted"></span>
         <span class="spacer"></span>
         <button id="import" title="Load a HAR file">Import</button>
-        <button id="export" title="Save these requests as a HAR file, including any credentials">Export</button>
+        <button id="export" title="Save these requests as a HAR file in this recording's folder, including any credentials">Export</button>
         <button id="copy-all" title="Copy every ticked request as curl">Copy all as curl</button>
         <button id="make-script" class="primary">Make me a bash script</button>
         <input id="import-file" type="file" accept=".har,application/json" hidden />
@@ -55,6 +55,7 @@
             <button role="tab" data-tab="request" aria-selected="false">Request</button>
             <button role="tab" data-tab="response" aria-selected="false">Response</button>
             <button role="tab" data-tab="flow" aria-selected="false">Flow</button>
+            <button role="tab" data-tab="screen" aria-selected="false">Screen</button>
             <span class="spacer"></span>
             <button id="close-detail" class="ghost" aria-label="Close details">Close</button>
           </div>
@@ -77,8 +78,7 @@
         <label class="check"><input id="embed-secrets" type="checkbox" /> Put credentials in the script</label>
         <span class="spacer"></span>
         <button id="copy-script">Copy script</button>
-        <button id="save-env">Download .env</button>
-        <button id="save-script" class="primary">Download .sh</button>
+        <button id="save-folder" class="primary" title="Save the script, its .env and a screen for each step in this recording's dated folder">Save to folder</button>
       </header>
       <div class="script-layout">
         <aside id="plan" class="plan"></aside>

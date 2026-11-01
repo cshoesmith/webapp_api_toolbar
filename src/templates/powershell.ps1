@@ -5,7 +5,7 @@
 #
 # Works in Windows PowerShell 5.1 and PowerShell 7.
 # Run with: powershell -ExecutionPolicy Bypass -File {{script_name}}.ps1
-# Responses are saved to OUT_DIR, one file per request.
+# Each run saves its responses to a new dated folder, one file per request.
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Net.Http
@@ -20,7 +20,7 @@ if (Test-Path -LiteralPath $EnvFile) {
     }
 }
 
-$OutDir = [IO.Path]::Combine((Get-Location).Path, $(if ($env:OUT_DIR) { $env:OUT_DIR } else { './{{script_name}}_output' }))
+$OutDir = [IO.Path]::Combine((Get-Location).Path, $(if ($env:OUT_DIR) { $env:OUT_DIR } else { "./{{script_name}}_output/$(Get-Date -Format 'yyyy-MM-dd_HH-mm-ss')" }))
 # @if has_loops
 # Safety limits for loops, and a pause between requests to stay polite.
 $MaxPages = if ($env:MAX_PAGES) { [int]$env:MAX_PAGES } else { 100 }

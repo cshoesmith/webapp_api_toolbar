@@ -359,6 +359,13 @@ td.num {
   padding: 8px 10px;
 }
 
+.screen {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--line);
+}
+
 .detail-actions {
   display: flex;
   flex-wrap: wrap;

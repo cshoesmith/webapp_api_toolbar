@@ -10,7 +10,7 @@
 // do, but branded Chrome ignores it.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -118,14 +118,70 @@ const panelCall = (cdp, session) => ({
     node.value = ${JSON.stringify(value)};
     node.dispatchEvent(new Event('change', { bubbles: true }));
   })()`),
+  downloads: () => cdp.evaluate(session, 'chrome.downloads.search({})'),
+  // Presses a save button and returns what the panel reports back.
+  save: async (selector) => {
+    const toast = () => cdp.evaluate(session, `document.querySelector('#toast').textContent`);
+    await cdp.evaluate(session, `document.querySelector('#toast').textContent = ''`);
+    await cdp.evaluate(session, `document.querySelector(${JSON.stringify(selector)}).click()`);
+    return waitFor(toast, 'the save to finish');
+  },
+  // The picture on the Screen tab, once the browser has decoded it.
+  screen: () => cdp.evaluate(session, `(() => {
+    const image = document.querySelector('#detail-body img');
+    return image?.naturalWidth > 0 ? image.src : '';
+  })()`),
 });
+
+function finishedFiles(folder) {
+  if (!existsSync(folder)) return [];
+  return readdirSync(folder, { recursive: true, withFileTypes: true })
+    .filter((item) => item.isFile() && !/\.(crdownload|tmp)$/.test(item.name))
+    .map((item) => join(item.parentPath, item.name));
+}
+
+// Saves from the script view, checks every file the panel reports was written,
+// and returns the folder.
+async function saveToFolder(ui, downloads) {
+  const message = await ui.save('#save-folder');
+  const [, count, name] = /^Saved (\d+) files to (\S+) in your downloads$/.exec(message) ?? assert.fail(message);
+  const folder = join(downloads, name);
+  await waitFor(() => finishedFiles(folder).length === Number(count), `${count} files in ${folder}`);
+  return folder;
+}
+
+// Browsers can hold a PowerShell or Python script until someone chooses Keep, and
+// the panel must say so rather than report it saved.
+async function saveScript(ui, folder, language, extension) {
+  await ui.setValue('#language', language);
+  const message = await ui.save('#save-folder');
+  const file = `api_script.${extension}`;
+  const [item] = (await ui.downloads()).filter(({ filename }) => filename.endsWith(file));
+  if (item.state === 'in_progress') {
+    assert.match(message, new RegExp(`${file}.*Keep`), 'a held script is not reported as saved');
+    console.log(`Held for approval: ${file}`);
+  } else {
+    assert.ok(existsSync(join(folder, file)), message);
+  }
+}
+
+// Headless browsers have no Keep button, so this does what it would: the held
+// bytes are already on disk under a temporary name.
+function keepHeldFile(folder, name) {
+  const held = readdirSync(folder).find((item) => item.endsWith('.crdownload'));
+  if (held) copyFileSync(join(folder, held), join(folder, name));
+}
+
+function assertJpeg(file) {
+  assert.deepEqual([...readFileSync(file).subarray(0, 3)], [0xff, 0xd8, 0xff], `${file} is a JPEG`);
+}
 
 // Checks the panel's output, then runs its script with every token revoked.
 async function checkScriptFlow({ cdp, ui, server, downloads, shoot }) {
   await waitFor(async () => parseInt(await ui.text('#count'), 10) >= 11, 'requests to be recorded');
   await sleep(800);
   console.log(`Recorded: ${await ui.text('#count')}`);
-  assert.match(await ui.text('#count'), /^13 of 14/, 'the call to another site starts unticked');
+  assert.match(await ui.text('#count'), /^13 of 14/, `the call to another site starts unticked: ${await ui.text('#rows')}`);
   await ui.click('#tick-all');
 
   await ui.click('#rows tr:nth-child(2)');
@@ -136,6 +192,10 @@ async function checkScriptFlow({ cdp, ui, server, downloads, shoot }) {
 
   await ui.click('[data-tab="response"]');
   assert.doesNotMatch(await ui.text('#detail-body'), /No body was captured/);
+
+  await ui.click('[data-tab="screen"]');
+  await waitFor(ui.screen, 'the screen for this call');
+  await shoot('screen');
 
   await ui.click('#make-script');
   const results = {};
@@ -160,17 +220,22 @@ async function checkScriptFlow({ cdp, ui, server, downloads, shoot }) {
   await ui.click('#make-script');
   await shoot('script');
 
-  await ui.click('#save-script');
-  await ui.click('#save-env');
-  await waitFor(() => existsSync(downloads) && readdirSync(downloads).filter((name) => !name.endsWith('.crdownload')).length >= 2, 'the downloads');
-  const saved = readdirSync(downloads);
-  console.log(`Downloaded: ${saved.join(', ')}`);
+  await ui.setValue('#language', 'bash');
+  const folder = await saveToFolder(ui, downloads);
+  const saved = readdirSync(folder);
+  const screens = readdirSync(join(folder, 'screens'));
+  console.log(`Saved to ${folder}: ${saved.join(', ')}, and ${screens.length} screens`);
+  for (const name of ['api_script.sh', 'api_script.env']) assert.ok(saved.includes(name), `${name} keeps its name`);
+  assert.equal(screens.length, 10, `every step has a screen: ${screens.join(', ')}`);
+  for (const name of screens) assertJpeg(join(folder, 'screens', name));
+
+  await saveScript(ui, folder, 'powershell', 'ps1');
+  keepHeldFile(folder, 'api_script.ps1');
 
   server.rotate();
   delete server.state.embedOrigin;
   const pwsh = spawnSync('pwsh', ['-NoProfile', '-Command', 'exit 0']).status === 0 ? 'pwsh' : 'powershell.exe';
-  const script = saved.find((name) => name.endsWith('.ps1'));
-  const running = spawn(pwsh, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script], { cwd: downloads, env: { ...process.env, DELAY: '0' } });
+  const running = spawn(pwsh, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'api_script.ps1'], { cwd: folder, env: { ...process.env, DELAY: '0' } });
   const log = [];
   running.stdout.on('data', (data) => log.push(String(data)));
   running.stderr.on('data', (data) => log.push(String(data)));
@@ -179,10 +244,43 @@ async function checkScriptFlow({ cdp, ui, server, downloads, shoot }) {
   assert.equal(server.state.notes.length, 1, 'the script created a note with fresh tokens');
   assert.ok(server.state.hits.includes('GET /api/products/p_1005'), 'the loop reached the last product');
   assert.equal(server.state.embedOrigin, server.base, 'the cross-origin call replayed with the right Origin');
-  const env = readFileSync(join(downloads, saved.find((name) => name.endsWith('.env'))), 'utf8');
+  const env = readFileSync(join(folder, 'api_script.env'), 'utf8');
   assert.match(env, /^PASSWORD=/m, 'the password comes from the user');
   assert.match(env, /^COOKIES_/m);
+  const [run] = readdirSync(join(folder, 'api_script_output'));
+  assert.match(run, /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$/, 'the run has its own dated folder');
   console.log('Script ran against revoked tokens: OK');
+
+  await saveScript(ui, folder, 'python', 'py');
+  await ui.setValue('#language', 'bash');
+  await ui.click('#back');
+  assert.match(await ui.save('#export'), /^Saved to .*credentials/);
+  assert.ok(existsSync(join(folder, 'api_toolbar_session.har')), 'Export goes in the same folder');
+  return folder;
+}
+
+// Each call gets the page as it stood after that call, and Clear starts a new
+// recording folder.
+async function checkScreens({ cdp, ui, page, server, downloads, firstFolder }) {
+  await ui.click('#clear');
+  const pictures = [];
+  for (const colour of ['red', 'blue']) {
+    await cdp.evaluate(page, `document.body.style.background = '${colour}'; fetch('/api/echo?colour=${colour}').then((response) => response.status)`);
+    await waitFor(async () => (await ui.text('#rows')).includes(colour), `the ${colour} call to be recorded`);
+    await ui.click('#rows tr:last-child');
+    await ui.click('[data-tab="screen"]');
+    pictures.push(await waitFor(ui.screen, `the ${colour} screen`));
+  }
+  assert.notEqual(pictures[0], pictures[1], 'a step shows the page at that step');
+  await ui.click('#make-script');
+  const folder = await saveToFolder(ui, downloads);
+  assert.notEqual(folder, firstFolder, 'Clear starts a new folder');
+  const screens = readdirSync(join(folder, 'screens'));
+  assert.equal(screens.length, 2, screens.join(', '));
+  const sizes = screens.map((name) => readFileSync(join(folder, 'screens', name)).length);
+  assert.notEqual(sizes[0], sizes[1], 'the saved files are the two different screens');
+  console.log(`Each step has its own screen: ${screens.join(', ')}`);
+  await ui.click('#back');
 }
 
 async function withBrowser(scenario) {
@@ -192,13 +290,19 @@ async function withBrowser(scenario) {
 
   const scratch = mkdtempSync(join(tmpdir(), 'api-toolbar-e2e-'));
   const downloads = join(scratch, 'downloads');
+  const profile = join(scratch, 'profile');
+  // Set in the profile because Browser.setDownloadBehavior would drop the folder
+  // the extension asks for. Without this, files reach the real Downloads folder.
+  mkdirSync(join(profile, 'Default'), { recursive: true });
+  writeFileSync(join(profile, 'Default', 'Preferences'), JSON.stringify({
+    download: { default_directory: downloads, prompt_for_download: false },
+  }));
   const server = await startServer();
-  const { child, url } = await launch(browser, join(scratch, 'profile'));
+  const { child, url } = await launch(browser, profile);
   const cdp = await Cdp.connect(url);
 
   try {
     await cdp.send('Target.setDiscoverTargets', { discover: true });
-    await cdp.send('Browser.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads, eventsEnabled: true });
     const targets = async () => (await cdp.send('Target.getTargets', { filter: [{}] })).targetInfos;
     const attach = async (target) => (await cdp.send('Target.attachToTarget', { targetId: target.targetId, flatten: true })).sessionId;
     const pageTarget = await waitFor(async () => (await targets()).find((item) => item.type === 'page'), 'the page');
@@ -236,7 +340,7 @@ async function runFlowInPage({ cdp, page, ui, server }) {
   // browser cache if recording left it on, and Chrome would then hide Origin.
   const embed = `fetch(${JSON.stringify(`${server.otherBase}/api/embed`)}).then((response) => response.status)`;
   assert.equal(await cdp.evaluate(page, embed), 200);
-  await sleep(400);
+  await waitFor(async () => (await ui.text('#rows')).includes('/api/embed'), 'the early call to be recorded');
   await ui.click('#clear');
   await cdp.evaluate(page, `runFlow((path, init) => fetch(path, init), ${JSON.stringify(PASSWORD)})`);
   assert.equal(await cdp.evaluate(page, embed), 200);
@@ -285,10 +389,11 @@ async function recordFromPanel({ cdp, server, downloads, targets, attach, page }
   console.log(`Recording ${await ui.text('#target')}`);
 
   await runFlowInPage({ cdp, page, ui, server });
-  await checkScriptFlow({ cdp, ui, server, downloads, shoot: screenshots(cdp, panel) });
+  const firstFolder = await checkScriptFlow({ cdp, ui, server, downloads, shoot: screenshots(cdp, panel) });
 
   await ui.click('#back');
   await checkPageCapture({ cdp, ui, page, server });
+  await checkScreens({ cdp, ui, page, server, downloads, firstFolder });
   assert.equal(await isAttached(), true);
   await ui.click('#record');
   await waitFor(async () => !(await isAttached()), 'Stop to remove the debugger');

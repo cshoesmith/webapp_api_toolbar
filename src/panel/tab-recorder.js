@@ -41,6 +41,12 @@ export function createTabRecorder({ onEntry, onDetach }) {
       return info?.targetInfo?.url ?? '';
     },
 
+    // JPEG, so a long recording stays small enough to hold in memory.
+    async captureScreen() {
+      const { data } = await send('Page.captureScreenshot', { format: 'jpeg', quality: 70 });
+      return data;
+    },
+
     async stop() {
       if (!target) return;
       const tab = target;
