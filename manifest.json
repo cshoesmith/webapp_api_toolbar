@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "API Toolbar",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Record a web app's API traffic, copy any call as curl, and turn a session into a runnable bash, Python or PowerShell script.",
   "minimum_chrome_version": "116",
   "permissions": ["debugger", "downloads", "sidePanel"],

@@ -1,6 +1,6 @@
 {
   "name": "api-toolbar",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "Chrome extension that records a site's API traffic and generates curl commands and scripts in bash, Python and PowerShell.",
